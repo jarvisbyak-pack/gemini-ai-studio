@@ -1,7 +1,6 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -12,27 +11,10 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Lazy GoogleGenAI client
-let aiClient: GoogleGenAI | null = null;
-function getAiClient(): GoogleGenAI | null {
-  if (!aiClient && process.env.GEMINI_API_KEY) {
-    aiClient = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return aiClient;
-}
-
 // Health check endpoint
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
-    hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
     timestamp: new Date().toISOString(),
   });
 });
@@ -110,7 +92,7 @@ app.post('/api/n8n/test', async (req, res) => {
   }
 });
 
-// Dispatch message to n8n Webhook node and optionally synthesize conversational reply
+// Dispatch message to n8n Webhook node and return the workflow response
 app.post('/api/n8n/dispatch', async (req, res) => {
   const {
     webhookUrl,
@@ -121,9 +103,6 @@ app.post('/api/n8n/dispatch', async (req, res) => {
     inputMode = 'text',
     sessionId = 'session-default',
     nodeEndpointId = '',
-    synthesizeWithAi = true,
-    systemPrompt = '',
-    conversationHistory = [],
   } = req.body;
 
   let n8nResponseData: any = null;
@@ -134,7 +113,6 @@ app.post('/api/n8n/dispatch', async (req, res) => {
 
   const startTime = Date.now();
 
-  // If a webhook URL is configured, forward to n8n
   if (webhookUrl && typeof webhookUrl === 'string' && webhookUrl.trim().length > 0) {
     try {
       const parsedUrl = webhookUrl.trim();
@@ -150,7 +128,7 @@ app.post('/api/n8n/dispatch', async (req, res) => {
         query: userMessage,
         sessionId,
         nodeEndpointId,
-        inputMode, // 'voice' | 'text'
+        inputMode,
         timestamp: new Date().toISOString(),
         ...customBody,
       };
@@ -191,14 +169,12 @@ app.post('/api/n8n/dispatch', async (req, res) => {
     }
   }
 
-  // Determine what spoken / readable text response to produce
   let extractedReplyText = '';
 
   if (n8nResponseData !== null) {
     if (typeof n8nResponseData === 'string') {
       extractedReplyText = n8nResponseData;
     } else if (typeof n8nResponseData === 'object') {
-      // Check common n8n AI response fields or webhook response fields
       if (typeof n8nResponseData.output === 'string') {
         extractedReplyText = n8nResponseData.output;
       } else if (typeof n8nResponseData.reply === 'string') {
@@ -210,7 +186,6 @@ app.post('/api/n8n/dispatch', async (req, res) => {
       } else if (typeof n8nResponseData.text === 'string') {
         extractedReplyText = n8nResponseData.text;
       } else if (Array.isArray(n8nResponseData) && n8nResponseData.length > 0) {
-        // e.g. [{ json: { ... } }] standard n8n array format
         const first = n8nResponseData[0];
         if (first?.json && typeof first.json === 'object') {
           extractedReplyText =
@@ -230,77 +205,11 @@ app.post('/api/n8n/dispatch', async (req, res) => {
     }
   }
 
-  // Check if AI synthesis is requested or if Gemini should assist (especially for voice spoken clarity or workflow co-pilot)
-  let aiSynthesizedText = extractedReplyText;
-  let aiUsed = false;
-
-  const ai = getAiClient();
-
-  if (synthesizeWithAi && ai) {
-    try {
-      const defaultInstruction =
-        'You are an intelligent voice and chat conversational AI assistant integrated into an n8n automation workflow. ' +
-        'Your goal is to communicate with the user naturally in two-way conversation, both in text and spoken voice. ' +
-        'Keep voice replies natural, concise, conversational, and direct without robotic greetings or excessive markup. ' +
-        'If n8n returned structured data or action results, speak the key highlights clearly and explain what occurred.';
-
-      const finalInstruction = systemPrompt ? `${defaultInstruction}\n\nCustom instructions: ${systemPrompt}` : defaultInstruction;
-
-      const promptContext = [
-        `User Input (${inputMode === 'voice' ? 'spoken voice' : 'text'}): "${userMessage}"`,
-        n8nReachable
-          ? `n8n Webhook Node Status: HTTP ${n8nStatus}\nn8n Webhook Raw Output:\n${typeof n8nResponseData === 'object' ? JSON.stringify(n8nResponseData) : String(n8nResponseData)}`
-          : n8nError
-            ? `n8n Webhook Note: The n8n webhook could not be reached (${n8nError}). Provide a helpful conversational answer to the user while politely noting the n8n status.`
-            : 'n8n Webhook Note: No webhook URL configured yet. Act as the conversational AI guide assisting the user.',
-        'Now respond directly to the user in a natural, conversational manner suitable for two-way voice and text interaction.',
-      ].join('\n\n');
-
-      let response: any = null;
-      const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
-      
-      for (const modelName of candidateModels) {
-        try {
-          response = await ai.models.generateContent({
-            model: modelName,
-            contents: promptContext,
-            config: {
-              systemInstruction: finalInstruction,
-              temperature: 0.7,
-            },
-          });
-          if (response?.text) break;
-        } catch (modelErr: any) {
-          console.warn(`Model ${modelName} failed or unavailable:`, modelErr?.message);
-        }
-      }
-
-      if (response && response.text) {
-        aiSynthesizedText = response.text.trim();
-        aiUsed = true;
-      }
-    } catch (aiErr: any) {
-      console.error('Gemini synthesis error:', aiErr);
-      // Fallback to the extracted reply text if AI synthesis encounters an issue
-      if (!aiSynthesizedText) {
-        aiSynthesizedText =
-          n8nResponseData !== null
-            ? typeof n8nResponseData === 'object'
-              ? JSON.stringify(n8nResponseData, null, 2)
-              : String(n8nResponseData)
-            : 'I heard you, but could not reach the n8n webhook or AI synthesizer.';
-      }
-    }
-  } else if (!aiSynthesizedText) {
-    aiSynthesizedText = n8nReachable
-      ? 'Workflow executed successfully.'
-      : n8nError
-        ? `Error contacting n8n node: ${n8nError}`
-        : 'Webhook received.';
-  }
+  const replyText = extractedReplyText ||
+    (n8nReachable ? 'Workflow executed successfully.' : n8nError ? `Error contacting n8n node: ${n8nError}` : 'Webhook received.');
 
   res.json({
-    ok: n8nReachable || aiUsed,
+    ok: n8nReachable,
     n8n: {
       reachable: n8nReachable,
       status: n8nStatus,
@@ -309,15 +218,14 @@ app.post('/api/n8n/dispatch', async (req, res) => {
       data: n8nResponseData,
     },
     reply: {
-      text: aiSynthesizedText,
+      text: replyText,
       rawOutput: extractedReplyText,
-      aiEnhanced: aiUsed,
+      aiEnhanced: false,
     },
   });
 });
 
 async function startServer() {
-  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

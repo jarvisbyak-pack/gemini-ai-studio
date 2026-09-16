@@ -27,9 +27,6 @@ const DEFAULT_SETTINGS: AppSettings = {
       lastLatencyMs: null,
     },
   ],
-  synthesizeWithAi: true,
-  systemPrompt:
-    'You are a friendly, direct conversational AI interface connecting the user to their n8n workspace automation. Keep spoken voice replies natural, concise, and helpful.',
   continuousVoiceMode: true,
   voiceSettings: {
     voiceURI: '',
@@ -55,7 +52,6 @@ export default function App() {
     error?: string;
   } | null>(null);
 
-  // Load settings from localStorage
   const [settings, setSettings] = useState<AppSettings>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -68,7 +64,6 @@ export default function App() {
     return DEFAULT_SETTINGS;
   });
 
-  // Load chat messages from localStorage
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -81,7 +76,6 @@ export default function App() {
     return [];
   });
 
-  // Save settings whenever changed
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
@@ -90,7 +84,6 @@ export default function App() {
     }
   }, [settings]);
 
-  // Save messages whenever changed
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(messages));
@@ -101,13 +94,11 @@ export default function App() {
 
   const activeNode = settings.nodes.find((n) => n.id === settings.activeNodeId) || settings.nodes[0];
 
-  // Helper to format current time
   const formatTime = () => {
     const d = new Date();
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Dispatch message to backend server / n8n
   const handleSendMessage = useCallback(
     async (text: string, mode: 'voice' | 'text' = 'text') => {
       if (!text.trim()) return;
@@ -124,7 +115,6 @@ export default function App() {
       setIsProcessing(true);
 
       try {
-        // Parse custom JSON payload if any
         let parsedCustomBody = {};
         if (settings.customPayloadJson) {
           try {
@@ -134,7 +124,6 @@ export default function App() {
           }
         }
 
-        // Prepare headers
         const requestHeaders: Record<string, string> = {};
         if (activeNode.authType === 'bearer' && activeNode.authToken) {
           requestHeaders['Authorization'] = `Bearer ${activeNode.authToken}`;
@@ -158,8 +147,6 @@ export default function App() {
             inputMode: mode,
             sessionId: settings.sessionId,
             nodeEndpointId: activeNode.id,
-            synthesizeWithAi: settings.synthesizeWithAi,
-            systemPrompt: settings.systemPrompt,
           }),
         });
 
@@ -179,17 +166,15 @@ export default function App() {
           n8nStatus: data?.n8n?.status,
           n8nLatencyMs: data?.n8n?.latencyMs,
           n8nRawData: data?.n8n?.data,
-          aiEnhanced: data?.reply?.aiEnhanced,
+          aiEnhanced: false,
           nodeName: activeNode.name,
           error: data?.n8n?.error,
         };
 
         setMessages((prev) => [...prev, assistantMessage]);
 
-        // Speak aloud if voice response enabled or user spoke
         if (settings.voiceSettings.autoSpeakReplies || mode === 'voice') {
           await voiceManager.speakText(replyText);
-          // When speaking finishes, trigger hands-free auto listen loop!
           voiceManager.onAiFinishedSpeaking();
         } else {
           voiceManager.setConversationState('idle');
@@ -213,7 +198,6 @@ export default function App() {
     [activeNode, settings]
   );
 
-  // Hook for voice and two-way turn-taking
   const voiceManager = useVoiceConversation({
     voiceSettings: settings.voiceSettings,
     continuousMode: settings.continuousVoiceMode,
@@ -221,7 +205,6 @@ export default function App() {
     isAppProcessing: isProcessing,
   });
 
-  // Test node connectivity
   const handleTestNode = async (node: N8nNodeConfig) => {
     if (!node.url) {
       alert('Please enter or paste a valid Webhook URL first.');
@@ -252,7 +235,6 @@ export default function App() {
       const data = await res.json();
       setTestResult(data);
 
-      // Update node latency / status in settings
       const updatedNodes = settings.nodes.map((n) => {
         if (n.id === node.id) {
           return {
@@ -292,12 +274,10 @@ export default function App() {
     }
   };
 
-  // Find last assistant response for voice call view
   const lastAiMsg = [...messages].reverse().find((m) => m.sender === 'assistant');
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 flex flex-col font-sans selection:bg-orange-200">
-      {/* Navigation Header */}
       <Header
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -312,7 +292,6 @@ export default function App() {
         onStopSpeaking={voiceManager.stopSpeaking}
       />
 
-      {/* Main Tab Content Area */}
       <main className="flex-1 flex flex-col">
         {activeTab === 'chat' && (
           <ChatView

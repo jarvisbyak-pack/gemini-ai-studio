@@ -39,8 +39,6 @@ export interface VoiceSettings {
 export interface AppSettings {
   activeNodeId: string;
   nodes: N8nNodeConfig[];
-  synthesizeWithAi: boolean;
-  systemPrompt: string;
   continuousVoiceMode: boolean;
   voiceSettings: VoiceSettings;
   sessionId: string;
